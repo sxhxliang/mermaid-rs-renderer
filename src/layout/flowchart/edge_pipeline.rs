@@ -676,6 +676,16 @@ fn branching_fan_side_candidates(
         return [None, None];
     }
 
+    // A branch target sitting nearly straight below the diamond reads best as
+    // a straight drop from the bottom apex (this matches dagre). Without this
+    // special case, near-vertical branches are forced out through the
+    // left/right vertices and hook back toward the target, producing tangled
+    // S-shaped routes on diamond -> node chains (e.g. diamond to cylinder).
+    const STRAIGHT_DROP_DX_RATIO: f32 = 0.25;
+    if dx.abs() <= (from.width * STRAIGHT_DROP_DX_RATIO).max(AXIS_EPSILON) {
+        return [Some((EdgeSide::Bottom, EdgeSide::Top, false)), None];
+    }
+
     match dx {
         x if x < -AXIS_EPSILON => [Some((EdgeSide::Left, EdgeSide::Top, false)), None],
         x if x > AXIS_EPSILON => [Some((EdgeSide::Right, EdgeSide::Top, false)), None],
@@ -689,6 +699,17 @@ fn branching_fan_side_candidates(
 // Stronger than three bend penalties plus low-degree primary deviation, while
 // remaining far below the cost of a crossing or any obstacle intersection.
 const BRANCHING_FAN_READABILITY_BONUS: f32 = 180.0;
+
+// Fraction of reverse-mate corridor overlap retained in side scoring: the
+// port pass spreads anti-parallel edges into two lanes, so the shared
+// corridor is expected. Kept slightly above zero as a tiebreaker.
+const REVERSE_PAIR_OVERLAP_RETAIN: f32 = 0.05;
+
+// Long feedback arcs must beat the alignment term (34x) and the low-degree
+// primary deviation (24) that otherwise drag them through the diagram
+// interior. Stronger than the combined interior advantage of a typical
+// two-bend shortcut, but far below a crossing or obstacle hit.
+const BACK_EDGE_OUTER_LANE_BONUS: f32 = 240.0;
 
 fn is_branching_fan_candidate(
     from: &NodeLayout,
@@ -728,6 +749,11 @@ struct RoutedSideChoiceContext<'a> {
     label_obstacles: &'a [Obstacle],
     routing_grid: Option<&'a RoutingGrid>,
     existing_segments: &'a [Segment],
+    /// Side pair already chosen for the reverse edge (to -> from), if any.
+    /// Lets an anti-parallel edge share its mate's corridor: port spreading
+    /// separates the two lanes, so corridor overlap must not be penalized
+    /// like overlap with unrelated edges.
+    reverse_mate_sides: Option<(EdgeSide, EdgeSide)>,
     config: &'a LayoutConfig,
     profile: RoutedSideSearchProfile,
 }
@@ -1037,6 +1063,40 @@ fn routed_side_candidate_score(
     } else {
         edge_crossings_with_existing(&points, ctx.existing_segments)
     };
+    // Anti-parallel edges share one corridor in opposite directions; the port
+    // pass spreads them into two lanes, so intersections with the already-
+    // placed reverse mate are expected (the zero-offset scoring path has a
+    // tiny port jog that grazes the mate's segment) and must not be scored
+    // like intersections with unrelated edges. Intersections with every other
+    // existing segment still count in full.
+    // Only applies for straight-through candidates (candidate.0 != candidate.1)
+    // in TopDown diagrams, i.e. a local feedback loop like D<->C sharing a
+    // vertical corridor. U-turn candidates (e.g. (Top,Top)) should not be
+    // pulled toward the mate's corridor, as that can drag the route through
+    // congested areas. In LeftRight diagrams the corridor-sharing pattern is
+    // less predictable, so the discount is TopDown-only. Cross-rank back
+    // edges (e.g. E->B spanning 2 ranks) get their own outer lane via
+    // BACK_EDGE_OUTER_LANE_BONUS.
+    let (crossings, overlap) = match ctx.reverse_mate_sides {
+        Some((mate_start, mate_end))
+            if mate_start == candidate.1
+                && mate_end == candidate.0
+                && candidate.0 != candidate.1
+                && ctx.graph_direction == crate::ir::Direction::TopDown =>
+        {
+            let mate_segment = (
+                anchor_point_for_node(to, mate_start, 0.0),
+                anchor_point_for_node(from, mate_end, 0.0),
+            );
+            let (mate_crossings, mate_overlap) =
+                edge_crossings_with_existing(&points, &[mate_segment]);
+            (
+                crossings.saturating_sub(mate_crossings),
+                (overlap - mate_overlap).max(0.0) + mate_overlap * REVERSE_PAIR_OVERLAP_RETAIN,
+            )
+        }
+        _ => (crossings, overlap),
+    };
     let bends = path_bend_count(&points) as f32;
     let len = path_length(&points);
     let from_load = side_load_for_node(ctx.side_loads, from_id, candidate.0) as f32;
@@ -1059,7 +1119,14 @@ fn routed_side_candidate_score(
         && candidate.0 == candidate.1
         && edge_axis_is_horizontal(candidate.0) != edge_axis_is_horizontal(primary.0)
     {
-        -10.0
+        // Feedback arcs spanning two or more ranks belong in an outer lane
+        // (like dagre routes them); single-rank back edges usually read
+        // better as short local loops, so keep their modest bonus.
+        if edge_role.back_edge_rank_span >= 2 {
+            -BACK_EDGE_OUTER_LANE_BONUS
+        } else {
+            -10.0
+        }
     } else {
         0.0
     };
@@ -2325,6 +2392,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         vec![(EdgeSide::Right, EdgeSide::Left); graph.edges.len()];
     let mut port_candidates: HashMap<(String, PortTrack), Vec<PortCandidate>> = HashMap::new();
     let mut side_choice_segments: Vec<Segment> = Vec::with_capacity(graph.edges.len());
+    let mut side_choice_done = vec![false; graph.edges.len()];
     for (idx, edge) in graph.edges.iter().enumerate() {
         let Some((from, to)) = effective_edge_endpoint_layouts(graph, nodes, subgraphs, edge)
         else {
@@ -2362,6 +2430,17 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
                 label_obstacles: &label_obstacles,
                 routing_grid: routing_grid.as_ref(),
                 existing_segments: &side_choice_segments,
+                reverse_mate_sides: graph
+                    .edges
+                    .iter()
+                    .enumerate()
+                    .find(|(mate_idx, mate)| {
+                        *mate_idx != idx
+                            && mate.from == edge.to
+                            && mate.to == edge.from
+                            && side_choice_done[*mate_idx]
+                    })
+                    .map(|(mate_idx, _)| selected_edge_sides[mate_idx]),
                 config,
                 profile,
             };
@@ -2418,6 +2497,7 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         let from_anchor = anchor_point_for_node(&from, start_side, 0.0);
         let to_anchor = anchor_point_for_node(&to, end_side, 0.0);
         side_choice_segments.push((from_anchor, to_anchor));
+        side_choice_done[idx] = true;
     }
     let mut node_side_counts: HashMap<String, [usize; 4]> = HashMap::new();
     for (idx, edge) in graph.edges.iter().enumerate() {
@@ -3261,27 +3341,39 @@ mod tests {
 
         to.x = 0.0;
         to.y = 200.0;
+        // A branch target nearly straight below the diamond drops from the
+        // bottom apex instead of hooking out a side vertex.
         assert_eq!(
             branching_fan_side_candidates(&from, &to, crate::ir::Direction::TopDown),
-            [
-                Some((EdgeSide::Left, EdgeSide::Top, false)),
-                Some((EdgeSide::Right, EdgeSide::Top, false)),
-            ]
+            [Some((EdgeSide::Bottom, EdgeSide::Top, false)), None]
         );
-        assert!(!is_branching_fan_candidate(
-            &from,
-            &to,
-            crate::ir::Direction::TopDown,
-            1,
-            EdgeSide::Left,
-            EdgeSide::Top,
-        ));
         assert!(is_branching_fan_candidate(
             &from,
             &to,
             crate::ir::Direction::TopDown,
             2,
-            EdgeSide::Left,
+            EdgeSide::Bottom,
+            EdgeSide::Top,
+        ));
+        // Just outside the straight-drop corridor the lateral fan returns.
+        to.x = 40.0;
+        assert_eq!(
+            branching_fan_side_candidates(&from, &to, crate::ir::Direction::TopDown),
+            [Some((EdgeSide::Right, EdgeSide::Top, false)), None]
+        );
+        to.x = -40.0;
+        assert_eq!(
+            branching_fan_side_candidates(&from, &to, crate::ir::Direction::TopDown),
+            [Some((EdgeSide::Left, EdgeSide::Top, false)), None]
+        );
+
+        to.x = 0.0;
+        assert!(!is_branching_fan_candidate(
+            &from,
+            &to,
+            crate::ir::Direction::TopDown,
+            1,
+            EdgeSide::Bottom,
             EdgeSide::Top,
         ));
 
@@ -3297,8 +3389,10 @@ mod tests {
             3,
         );
         assert_eq!(bounded.len(), 3);
-        assert!(bounded.contains(&(EdgeSide::Left, EdgeSide::Top, false)));
-        assert!(bounded.contains(&(EdgeSide::Right, EdgeSide::Top, false)));
+        // The straight-down fan merges with the primary (Bottom, Top); the
+        // lateral fan candidates only appear for off-axis targets.
+        assert!(bounded.contains(&(EdgeSide::Bottom, EdgeSide::Top, false)));
+        assert!(bounded.contains(&(EdgeSide::Left, EdgeSide::Right, false)));
     }
 
     #[test]

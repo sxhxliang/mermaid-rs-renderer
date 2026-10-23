@@ -8,6 +8,10 @@ use super::super::ranking::compute_ranks_subset;
 pub(in crate::layout) struct FlowchartEdgeRole {
     pub(in crate::layout) is_cycle_edge: bool,
     pub(in crate::layout) is_back_edge: bool,
+    /// Graph-rank distance the edge travels backward (`from_rank - to_rank`
+    /// for back edges, 0 otherwise). Long feedback arcs (span >= 2) belong in
+    /// an outer routing lane; single-rank back edges usually stay local.
+    pub(in crate::layout) back_edge_rank_span: usize,
     pub(in crate::layout) crosses_subgraph_boundary: bool,
     pub(in crate::layout) has_center_label: bool,
     pub(in crate::layout) has_endpoint_label: bool,
@@ -36,6 +40,10 @@ pub(in crate::layout) fn classify_edge_roles(graph: &Graph) -> Vec<FlowchartEdge
                 (ranks.get(&edge.from), ranks.get(&edge.to)),
                 (Some(from_rank), Some(to_rank)) if to_rank <= from_rank
             );
+            let back_edge_rank_span = match (ranks.get(&edge.from), ranks.get(&edge.to)) {
+                (Some(from_rank), Some(to_rank)) if to_rank < from_rank => from_rank - to_rank,
+                _ => 0,
+            };
             let from_subgraphs = node_subgraphs.get(edge.from.as_str());
             let to_subgraphs = node_subgraphs.get(edge.to.as_str());
             let crosses_subgraph_boundary = from_subgraphs != to_subgraphs;
@@ -43,6 +51,7 @@ pub(in crate::layout) fn classify_edge_roles(graph: &Graph) -> Vec<FlowchartEdge
             FlowchartEdgeRole {
                 is_cycle_edge,
                 is_back_edge,
+                back_edge_rank_span,
                 crosses_subgraph_boundary,
                 has_center_label: edge
                     .label

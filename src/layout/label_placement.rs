@@ -197,7 +197,7 @@ pub fn resolve_all_label_positions(
         config,
     );
     if layout.kind == DiagramKind::Flowchart {
-        move_flowchart_labels_off_own_edges(&mut layout.edges);
+        move_flowchart_labels_off_own_edges(&mut layout.edges, &layout.nodes);
     }
 
     // Step 2: Resolve endpoint labels (start_label_anchor, end_label_anchor).
@@ -212,7 +212,17 @@ pub fn resolve_all_label_positions(
     );
 }
 
-fn move_flowchart_labels_off_own_edges(edges: &mut [EdgeLayout]) {
+fn move_flowchart_labels_off_own_edges(
+    edges: &mut [EdgeLayout],
+    nodes: &BTreeMap<String, NodeLayout>,
+) {
+    // Node rects (slightly padded) so a nudge never pushes a label inside a
+    // node box; the old code only checked the label's own edge path.
+    let node_rects: Vec<Rect> = nodes
+        .values()
+        .filter(|node| !node.hidden)
+        .map(|node| (node.x - 4.0, node.y - 4.0, node.width + 8.0, node.height + 8.0))
+        .collect();
     for edge in edges {
         let (Some(label), Some(anchor)) = (&edge.label, edge.label_anchor) else {
             continue;
@@ -244,7 +254,10 @@ fn move_flowchart_labels_off_own_edges(edges: &mut [EdgeLayout]) {
                 label.width,
                 label.height,
             );
-            if polyline_rect_distance(&edge.points, &candidate_rect) > 0.0 {
+            let hits_node = node_rects
+                .iter()
+                .any(|node_rect| overlap_area(&candidate_rect, node_rect) > 0.0);
+            if !hits_node && polyline_rect_distance(&edge.points, &candidate_rect) > 0.0 {
                 edge.label_anchor = Some(candidate);
                 break;
             }

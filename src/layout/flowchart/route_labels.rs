@@ -213,6 +213,22 @@ fn provisional_route_label_center(
             }
         };
         let needs_cross_axis_lift = label_main + margin * 2.0 >= main_span.max(1.0);
+        // A label centered on the path also blocks routing when it is wide
+        // across a straight edge (e.g. a wide label on a vertical edge). The
+        // length check above misses that case, so test the rect directly: if
+        // it covers the straight anchor-to-anchor segment, lift it aside now
+        // instead of forcing the router to carve a detour around it later.
+        let centered_obstacle = Obstacle {
+            id: String::new(),
+            x: center.0 - label.width / 2.0 - ctx.edge_label_pad_x,
+            y: center.1 - label.height / 2.0 - ctx.edge_label_pad_y,
+            width: label.width + 2.0 * ctx.edge_label_pad_x,
+            height: label.height + 2.0 * ctx.edge_label_pad_y,
+            members: None,
+        };
+        let blocks_straight_path =
+            segment_intersects_rect((start.0, start.1), (end.0, end.1), &centered_obstacle);
+        let needs_cross_axis_lift = needs_cross_axis_lift || blocks_straight_path;
         if needs_cross_axis_lift {
             let multiline_lift = if label.lines.len() > 1 {
                 label_cross * 0.75
