@@ -5833,7 +5833,10 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
             let edge_meta = parse_edge_meta(arrow);
             return Some((
                 left.to_string(),
-                Some(label_clean.to_string()),
+                // mermaid strips one layer of surrounding quotes from
+                // |"..."| edge labels; without this the quotes render as
+                // literal label text, unlike mermaid.live.
+                Some(strip_quotes(label_clean)),
                 right.to_string(),
                 edge_meta,
             ));
@@ -5869,7 +5872,7 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
         let left = extract(left_match).trim();
         let right = extract(right_match).trim();
         let label_raw = extract(label_match).trim();
-        let label_clean = label_raw.trim_matches('|').trim();
+        let label_clean = strip_quotes(label_raw.trim_matches('|').trim());
         if !label_clean.is_empty() && !left.is_empty() && !right.is_empty() {
             let start = caps.name("start").map(|m| m.as_str()).unwrap_or("");
             let dash1 = caps.name("dash1")?.as_str();
@@ -5927,7 +5930,7 @@ fn parse_edge_line(line: &str) -> Option<(String, Option<String>, String, EdgeMe
 
     let (label, right_token) = if let Some(stripped) = right.strip_prefix('|') {
         if let Some(end) = stripped.find('|') {
-            let label = stripped[..end].trim().to_string();
+            let label = strip_quotes(stripped[..end].trim());
             let rest = stripped[end + 1..].trim();
             (Some(label), rest)
         } else {
@@ -6765,6 +6768,23 @@ A["foo & bar"] & B --> C"#;
         assert_eq!(parsed.graph.edges.len(), 2);
         assert_eq!(parsed.graph.edges[0].label.as_deref(), Some("needs review"));
         assert_eq!(parsed.graph.edges[1].label.as_deref(), Some("ship it"));
+    }
+
+    #[test]
+    fn parse_pipe_edge_label_strips_surrounding_quotes() {
+        // mermaid.live renders |"..."| without the quotes; the quotes are
+        // syntax, not label text.
+        let input = "graph TD\nA -->|\"自然语言意图与特征提取\"| B\nC -->|'single quoted'| D";
+        let parsed = parse_mermaid(input).unwrap();
+        assert_eq!(parsed.graph.edges.len(), 2);
+        assert_eq!(
+            parsed.graph.edges[0].label.as_deref(),
+            Some("自然语言意图与特征提取")
+        );
+        assert_eq!(
+            parsed.graph.edges[1].label.as_deref(),
+            Some("single quoted")
+        );
     }
 
     #[test]
