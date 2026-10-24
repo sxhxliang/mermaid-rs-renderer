@@ -425,7 +425,32 @@ pub fn layout_dagre(
         }
     }
 
-    // 10. Acyclic undo: reverse the points of reversed edges.
+    // 10. Orthogonalize: turn dummy-chain diagonals into right-angle
+    // elbows (mermaid.live look), then re-anchor labels at the path
+    // midpoint so each label sits on a straight horizontal/vertical run.
+    for edge in &layout_edges {
+        let Some(points) = edge_points.get_mut(&edge.orig_idx) else {
+            continue;
+        };
+        if points.len() >= 3 {
+            *points = orthogonalize_points(points);
+        }
+    }
+    for edge in &layout_edges {
+        let Some(label) = edge_labels.get(edge.orig_idx).and_then(|l| l.as_ref()) else {
+            continue;
+        };
+        if label.width <= 0.0 || label.height <= 0.0 {
+            continue;
+        }
+        if let Some(points) = edge_points.get(&edge.orig_idx) {
+            if let Some(mid) = point_at_progress(points, 0.5) {
+                edge_label_centers.insert(edge.orig_idx, mid);
+            }
+        }
+    }
+
+    // 11. Acyclic undo: reverse the points of reversed edges.
     for edge in &layout_edges {
         if edge.reversed {
             if let Some(points) = edge_points.get_mut(&edge.orig_idx) {
@@ -434,7 +459,7 @@ pub fn layout_dagre(
         }
     }
 
-    // 11. Mirror back for flipped directions, and swap axes for horizontal.
+    // 12. Translate to origin and swap axes for horizontal directions.
     let mut node_centers: HashMap<String, (f32, f32)> = HashMap::new();
     for (id, node) in layout_nodes.iter() {
         if node.dummy_kind.is_some() {
@@ -906,6 +931,45 @@ fn compress_points(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
     out
 }
 
+/// Convert a polyline into an orthogonal (Manhattan) route.
+///
+/// Each diagonal segment gets one elbow point. In TD space the rule is:
+/// the first segment (leaving the source) drops vertically first, the last
+/// segment (entering the target) approaches vertically last, and middle
+/// segments drop vertically first. This keeps edges leaving/entering nodes
+/// vertically for TD layouts (after the axis swap, horizontally for LR),
+/// and turns the dagre dummy-chain diagonals into the right-angle elbows
+/// mermaid.live renders. The elbow stays inside the segment's bounding box,
+/// so no new node crossings are introduced. Already-orthogonal segments
+/// are untouched.
+fn orthogonalize_points(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut out: Vec<(f32, f32)> = vec![points[0]];
+    let n = points.len();
+    for i in 0..n - 1 {
+        let p = points[i];
+        let q = points[i + 1];
+        let is_first = i == 0;
+        let is_last = i == n - 2;
+        if (p.0 - q.0).abs() < 1e-3 || (p.1 - q.1).abs() < 1e-3 {
+            // Already orthogonal.
+            out.push(q);
+        } else if is_last {
+            // Enter the target vertically: horizontal first, then vertical.
+            out.push((q.0, p.1));
+            out.push(q);
+        } else {
+            // Drop vertically first (first and middle segments).
+            let _ = is_first;
+            out.push((p.0, q.1));
+            out.push(q);
+        }
+    }
+    compress_points(&out)
+}
+
 /// Point at `progress` (0..1) along a polyline by arc length.
 fn point_at_progress(points: &[(f32, f32)], progress: f32) -> Option<(f32, f32)> {
     if points.len() < 2 {
@@ -1109,5 +1173,32 @@ mod tests {
         let mid = point_at_progress(&pts, 0.5).unwrap();
         assert!((mid.0 - 10.0).abs() < 1e-3);
         assert!((mid.1 - 0.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn orthogonalize_makes_right_angle_elbows() {
+        // Diagonal then vertical (B->C shape): first segment drops
+        // vertically first, last segment enters vertically.
+        let pts = vec![(265.0, 148.0), (203.0, 188.0), (203.0, 228.0)];
+        let ortho = orthogonalize_points(&pts);
+        assert_eq!(
+            ortho,
+            vec![(265.0, 148.0), (265.0, 188.0), (203.0, 188.0), (203.0, 228.0)]
+        );
+        // Every consecutive pair shares x or y.
+        for w in ortho.windows(2) {
+            assert!(
+                (w[0].0 - w[1].0).abs() < 1e-3 || (w[0].1 - w[1].1).abs() < 1e-3,
+                "non-orthogonal segment {w:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn orthogonalize_leaves_straight_paths_untouched() {
+        // A straight vertical path compresses its redundant middle point
+        // but keeps the same geometry.
+        let pts = vec![(100.0, 0.0), (100.0, 50.0), (100.0, 100.0)];
+        assert_eq!(orthogonalize_points(&pts), vec![(100.0, 0.0), (100.0, 100.0)]);
     }
 }

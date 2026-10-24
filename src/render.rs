@@ -1052,6 +1052,11 @@ pub fn render_svg_with_dimensions(
             | crate::ir::DiagramKind::Er => 1.0,
             _ => 2.0,
         };
+        // Edge labels are collected separately and appended after all edge
+        // paths, so every label paints on top of every line (mermaid.js
+        // draws all edgeLabels after all edgePaths). Otherwise a later
+        // edge's path would paint over an earlier edge's label.
+        let mut edge_label_svg = String::new();
         for (edge_idx, edge) in layout.edges.iter().enumerate() {
             let d = if layout.kind == crate::ir::DiagramKind::Flowchart && edge.points.len() > 2 {
                 rounded_polyline_path(&edge.points, 10.0)
@@ -1172,7 +1177,7 @@ pub fn render_svg_with_dimensions(
                 let (pad_x, pad_y) = edge_label_padding(layout.kind, config);
                 let (fill_opacity, stroke_opacity) = match layout.kind {
                     crate::ir::DiagramKind::State => (0.7, 0.25),
-                    crate::ir::DiagramKind::Flowchart => (0.95, 0.45),
+                    crate::ir::DiagramKind::Flowchart => (1.0, 0.45),
                     _ => (0.85, 0.35),
                 };
                 let label_scale = if layout.kind == crate::ir::DiagramKind::State {
@@ -1206,10 +1211,10 @@ pub fn render_svg_with_dimensions(
                     ));
                 }
                 if layout.kind == crate::ir::DiagramKind::State {
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<g class=\"edgeLabel\" data-edge-id=\"{edge_id}\" data-label-kind=\"center\">"
                     ));
-                    svg.push_str(&text_block_svg_with_font_size(
+                    edge_label_svg.push_str(&text_block_svg_with_font_size(
                         x,
                         y,
                         label,
@@ -1220,12 +1225,12 @@ pub fn render_svg_with_dimensions(
                         edge.override_style.label_color.as_deref(),
                         false,
                     ));
-                    svg.push_str("</g>");
+                    edge_label_svg.push_str("</g>");
                 } else {
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<g class=\"edgeLabel\" data-edge-id=\"{edge_id}\" data-label-kind=\"center\">"
                     ));
-                    svg.push_str(&text_block_svg(
+                    edge_label_svg.push_str(&text_block_svg(
                         x,
                         y,
                         label,
@@ -1234,7 +1239,7 @@ pub fn render_svg_with_dimensions(
                         true,
                         edge.override_style.label_color.as_deref(),
                     ));
-                    svg.push_str("</g>");
+                    edge_label_svg.push_str("</g>");
                 }
             }
 
@@ -1276,7 +1281,7 @@ pub fn render_svg_with_dimensions(
                     } else {
                         0.0
                     };
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<rect data-edge-id=\"{edge_id}\" data-label-kind=\"start\" x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" rx=\"2\" ry=\"2\" fill=\"{}\" fill-opacity=\"{:.2}\" stroke=\"{}\" stroke-opacity=\"{:.2}\" stroke-width=\"0.8\"/>",
                         rect.x,
                         rect.y,
@@ -1289,10 +1294,10 @@ pub fn render_svg_with_dimensions(
                     ));
                 }
                 if layout.kind == crate::ir::DiagramKind::State {
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<g class=\"edgeLabel\" data-edge-id=\"{edge_id}\" data-label-kind=\"start\">"
                     ));
-                    svg.push_str(&text_block_svg_with_font_size(
+                    edge_label_svg.push_str(&text_block_svg_with_font_size(
                         x,
                         y,
                         label,
@@ -1303,12 +1308,12 @@ pub fn render_svg_with_dimensions(
                         Some(label_color),
                         false,
                     ));
-                    svg.push_str("</g>");
+                    edge_label_svg.push_str("</g>");
                 } else {
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<g class=\"edgeLabel\" data-edge-id=\"{edge_id}\" data-label-kind=\"start\">"
                     ));
-                    svg.push_str(&text_block_svg(
+                    edge_label_svg.push_str(&text_block_svg(
                         x,
                         y,
                         label,
@@ -1317,7 +1322,7 @@ pub fn render_svg_with_dimensions(
                         false,
                         Some(label_color),
                     ));
-                    svg.push_str("</g>");
+                    edge_label_svg.push_str("</g>");
                 }
             }
             if let Some(label) = edge.end_label.as_ref()
@@ -1340,7 +1345,7 @@ pub fn render_svg_with_dimensions(
                     } else {
                         0.0
                     };
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<rect data-edge-id=\"{edge_id}\" data-label-kind=\"end\" x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" rx=\"2\" ry=\"2\" fill=\"{}\" fill-opacity=\"{:.2}\" stroke=\"{}\" stroke-opacity=\"{:.2}\" stroke-width=\"0.8\"/>",
                         rect.x,
                         rect.y,
@@ -1353,10 +1358,10 @@ pub fn render_svg_with_dimensions(
                     ));
                 }
                 if layout.kind == crate::ir::DiagramKind::State {
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<g class=\"edgeLabel\" data-edge-id=\"{edge_id}\" data-label-kind=\"end\">"
                     ));
-                    svg.push_str(&text_block_svg_with_font_size(
+                    edge_label_svg.push_str(&text_block_svg_with_font_size(
                         x,
                         y,
                         label,
@@ -1367,12 +1372,12 @@ pub fn render_svg_with_dimensions(
                         Some(label_color),
                         false,
                     ));
-                    svg.push_str("</g>");
+                    edge_label_svg.push_str("</g>");
                 } else {
-                    svg.push_str(&format!(
+                    edge_label_svg.push_str(&format!(
                         "<g class=\"edgeLabel\" data-edge-id=\"{edge_id}\" data-label-kind=\"end\">"
                     ));
-                    svg.push_str(&text_block_svg(
+                    edge_label_svg.push_str(&text_block_svg(
                         x,
                         y,
                         label,
@@ -1381,10 +1386,11 @@ pub fn render_svg_with_dimensions(
                         false,
                         Some(label_color),
                     ));
-                    svg.push_str("</g>");
+                    edge_label_svg.push_str("</g>");
                 }
             }
         }
+        svg.push_str(&edge_label_svg);
     }
 
     if !is_sequence {
