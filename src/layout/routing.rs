@@ -517,21 +517,11 @@ fn expand_obstacle(obstacle: &Obstacle, pad: f32) -> Obstacle {
     }
 }
 
-fn preferred_label_metrics(points: &[(f32, f32)], ctx: &RouteContext<'_>) -> PreferredLabelMetrics {
-    let Some(obstacle) = ctx.preferred_label_obstacle else {
-        return PreferredLabelMetrics::default();
-    };
-    let hard_hits = path_label_intersections(points, std::slice::from_ref(obstacle), None);
-    let near_hits = path_label_near_intersections(
-        points,
-        std::slice::from_ref(obstacle),
-        None,
-        ctx.preferred_label_clearance.max(0.0),
-    );
-    PreferredLabelMetrics {
-        hard_hits,
-        near_hits,
-    }
+fn preferred_label_metrics(_points: &[(f32, f32)], _ctx: &RouteContext<'_>) -> PreferredLabelMetrics {
+    // Labels sit directly on the routed path (mermaid.live style), so the
+    // path must not be penalized for crossing its own label's reserved area.
+    // Other edges still avoid the label via the shared route_label_obstacles.
+    PreferredLabelMetrics::default()
 }
 
 fn own_label_score(own_label: PreferredLabelMetrics) -> usize {

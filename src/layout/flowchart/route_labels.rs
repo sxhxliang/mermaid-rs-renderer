@@ -213,22 +213,6 @@ fn provisional_route_label_center(
             }
         };
         let needs_cross_axis_lift = label_main + margin * 2.0 >= main_span.max(1.0);
-        // A label centered on the path also blocks routing when it is wide
-        // across a straight edge (e.g. a wide label on a vertical edge). The
-        // length check above misses that case, so test the rect directly: if
-        // it covers the straight anchor-to-anchor segment, lift it aside now
-        // instead of forcing the router to carve a detour around it later.
-        let centered_obstacle = Obstacle {
-            id: String::new(),
-            x: center.0 - label.width / 2.0 - ctx.edge_label_pad_x,
-            y: center.1 - label.height / 2.0 - ctx.edge_label_pad_y,
-            width: label.width + 2.0 * ctx.edge_label_pad_x,
-            height: label.height + 2.0 * ctx.edge_label_pad_y,
-            members: None,
-        };
-        let blocks_straight_path =
-            segment_intersects_rect((start.0, start.1), (end.0, end.1), &centered_obstacle);
-        let needs_cross_axis_lift = needs_cross_axis_lift || blocks_straight_path;
         if needs_cross_axis_lift {
             let multiline_lift = if label.lines.len() > 1 {
                 label_cross * 0.75
@@ -279,7 +263,10 @@ pub(super) fn sync_route_label_plan_with_points(
         return;
     }
 
-    let preserve_reserved_center = ctx.kind == DiagramKind::Flowchart;
+    // Labels sit directly on the routed path (mermaid.live style): the path
+    // midpoint is the anchor, and the path is never detoured around its own
+    // label. The reserved obstacle keeps *other* edges away for spacing.
+    let preserve_reserved_center = false;
     let label_center = if preserve_reserved_center {
         plan.center
     } else {
@@ -289,29 +276,6 @@ pub(super) fn sync_route_label_plan_with_points(
     };
     plan.center = label_center;
     ctx.label_anchors[idx] = Some(label_center);
-    if preserve_reserved_center
-        && let Some(label) = ctx
-            .edge_route_labels
-            .get(idx)
-            .and_then(|label| label.as_ref())
-    {
-        let label_obstacle = Obstacle {
-            id: plan.obstacle_id.clone(),
-            x: label_center.0 - label.width / 2.0 - ctx.edge_label_pad_x,
-            y: label_center.1 - label.height / 2.0 - ctx.edge_label_pad_y,
-            width: label.width + 2.0 * ctx.edge_label_pad_x,
-            height: label.height + 2.0 * ctx.edge_label_pad_y,
-            members: None,
-        };
-        if let Some(detoured) = detour_flowchart_path_around_label(
-            points,
-            &label_obstacle,
-            ctx.direction,
-            (ctx.edge_label_pad_y.max(ctx.edge_label_pad_x) * 0.5).max(8.0),
-        ) {
-            *points = detoured;
-        }
-    }
 
     if !preserve_reserved_center && !matches!(ctx.kind, DiagramKind::Flowchart | DiagramKind::State)
     {
@@ -500,23 +464,12 @@ mod tests {
         };
         sync_route_label_plan_with_points(0, &mut points, &mut sync_ctx);
 
-        assert_eq!(label_anchors[0], Some((20.0, 6.0)));
-        assert!(
-            !path_intersects_label_obstacle(
-                &points,
-                &Obstacle {
-                    id: "edge-label-reserved:0".to_string(),
-                    x: 6.0,
-                    y: -1.0,
-                    width: 28.0,
-                    height: 14.0,
-                    members: None,
-                }
-            ),
-            "flowchart label sync should detour around reserved label box"
-        );
+        // Labels sit directly on the routed path (mermaid.live style): the
+        // anchor is the path midpoint, and the path is not detoured.
+        assert_eq!(label_anchors[0], Some((20.0, 0.0)));
+        assert_eq!(points, vec![(0.0, 0.0), (40.0, 0.0)]);
         assert!((obstacles[0].x - 6.0).abs() < 0.1);
-        assert!((obstacles[0].y + 1.0).abs() < 0.1);
+        assert!((obstacles[0].y + 7.0).abs() < 0.1);
     }
 
     #[test]

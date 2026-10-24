@@ -3077,6 +3077,9 @@ flowchart LR
             allow_exterior_fallback: false,
         };
         let points = route_edge_with_avoidance(&ctx, None, None, None);
+        // Labels sit directly on the routed path (mermaid.live style), so the
+        // edge's own path goes through its reserved label corridor instead of
+        // avoiding it. Other edges still avoid it via the shared obstacles.
         let label_corridor = Obstacle {
             id: "expanded".to_string(),
             x: label_obstacles[0].x - clearance,
@@ -3089,8 +3092,8 @@ flowchart LR
             .windows(2)
             .any(|segment| segment_intersects_rect(segment[0], segment[1], &label_corridor));
         assert!(
-            !intersects,
-            "expected routed path to avoid reserved label corridor, got {points:?}"
+            intersects,
+            "expected routed path to go through own reserved label corridor, got {points:?}"
         );
     }
 }
