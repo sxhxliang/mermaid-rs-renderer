@@ -37,6 +37,8 @@ pub struct Args {
 
     /// Built-in theme preset (default, dark, forest, neutral, modern).
     /// Applied before config-file/init themeVariables overrides.
+    /// When --layoutEngine dagre is selected and no theme is given,
+    /// the dagre engine default (neutral) is used instead.
     #[arg(short = 't', long = "theme")]
     pub theme: Option<String>,
 
@@ -64,7 +66,9 @@ pub struct Args {
     #[arg(long = "dumpLayout")]
     pub dump_layout: Option<PathBuf>,
 
-    /// Layered flowchart placement engine (`current`, `dagre`, or guarded `auto`)
+    /// Layered flowchart placement engine (`current`, `dagre`, or guarded `auto`).
+    /// The dagre engine defaults to the neutral theme and rankSpacing 100
+    /// unless -t/--rankSpacing or a config file says otherwise.
     #[arg(long = "layoutEngine", value_enum)]
     pub layout_engine: Option<LayoutEngineArg>,
 
@@ -115,7 +119,12 @@ const DEFAULT_HEIGHT: f32 = 800.0;
 
 pub fn run() -> Result<()> {
     let args = Args::parse();
-    let mut base_config = load_config_with_theme(args.config.as_deref(), args.theme.as_deref())?;
+    // The dagre engine's defaults (neutral theme, rankSpacing 100) are
+    // seeded as the config base so that a config file or an explicit CLI
+    // flag can still override them; see load_config_with_theme.
+    let dagre_defaults = matches!(args.layout_engine, Some(LayoutEngineArg::Dagre));
+    let mut base_config =
+        load_config_with_theme(args.config.as_deref(), args.theme.as_deref(), dagre_defaults)?;
     // Explicit output dimensions are only forced when the user passed
     // --width/--height; otherwise the diagram keeps its natural size (#83).
     let explicit_dimensions = match (args.width, args.height) {

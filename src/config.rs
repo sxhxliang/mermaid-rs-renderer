@@ -816,6 +816,11 @@ impl Default for TimelineConfig {
     }
 }
 
+/// Default rank spacing for the dagre flowchart engine, chosen to match
+/// the airier vertical rhythm of mermaid.live reference renders (the
+/// global default of 50 packs ranks noticeably tighter).
+pub const DAGRE_DEFAULT_RANK_SPACING: f32 = 100.0;
+
 impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
@@ -1541,17 +1546,31 @@ struct ConfigFile {
 }
 
 pub fn load_config(path: Option<&Path>) -> anyhow::Result<Config> {
-    load_config_with_theme(path, None)
+    load_config_with_theme(path, None, false)
 }
 
 /// Load config with an optional CLI theme preset. The preset takes
 /// precedence over the config file's `theme` name but is applied before
 /// `themeVariables`, so fine-grained variable overrides still win.
+///
+/// When `dagre_defaults` is true (the dagre flowchart engine is selected
+/// via CLI), the base config is seeded with the dagre engine's defaults —
+/// the neutral theme and rank_spacing 100 — before the config file is
+/// applied. This keeps the precedence chain intact: an explicit CLI flag
+/// beats the config file, which beats the engine default, which beats the
+/// global default. A config file theme or rankSpacing therefore still
+/// overrides the dagre defaults, and an explicit CLI flag overrides both.
 pub fn load_config_with_theme(
     path: Option<&Path>,
     cli_theme: Option<&str>,
+    dagre_defaults: bool,
 ) -> anyhow::Result<Config> {
     let mut config = Config::default();
+    if dagre_defaults {
+        config.theme = Theme::neutral();
+        config.render.background = config.theme.background.clone();
+        config.layout.rank_spacing = DAGRE_DEFAULT_RANK_SPACING;
+    }
     let cli_theme = match cli_theme {
         Some(name) => Some(Theme::from_name(name).ok_or_else(|| {
             anyhow::anyhow!(
@@ -4078,6 +4097,24 @@ mod tests {
         assert!(config.layout.fast_text_metrics);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn dagre_defaults_seed_neutral_theme_and_rank_spacing() {
+        // No config file, no CLI theme: dagre defaults apply.
+        let config = load_config_with_theme(None, None, true).expect("should load config");
+        assert_eq!(config.theme.primary_color, "#eeeeee");
+        assert_eq!(config.layout.rank_spacing, DAGRE_DEFAULT_RANK_SPACING);
+
+        // Without dagre, the global defaults are untouched.
+        let config = load_config_with_theme(None, None, false).expect("should load config");
+        assert_eq!(config.theme.primary_color, "#ECECFF");
+        assert_eq!(config.layout.rank_spacing, 50.0);
+
+        // An explicit CLI theme still beats the dagre default.
+        let config = load_config_with_theme(None, Some("dark"), true).expect("should load config");
+        assert_eq!(config.theme.primary_color, "#1f2020");
+        assert_eq!(config.layout.rank_spacing, DAGRE_DEFAULT_RANK_SPACING);
     }
 
     #[test]
