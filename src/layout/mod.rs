@@ -162,6 +162,98 @@ impl LayoutStageMetrics {
     }
 }
 
+/// Build the final layout from the full dagre pipeline's output.
+///
+/// Node positions come from `output.node_centers` (converted to top-left
+/// origins); edge points and label anchors come straight from the pipeline.
+/// Self-loops, which the pipeline skips, get a compact loop on the node's
+/// right side. Start/end labels anchor at 25%/75% along the path.
+#[allow(clippy::too_many_arguments)]
+fn build_layout_from_dagre_output(
+    graph: &Graph,
+    nodes: &mut BTreeMap<String, NodeLayout>,
+    output: flowchart::dagre_layout::DagreLayoutOutput,
+    edge_route_labels: &[Option<TextBlock>],
+    edge_start_labels: &[Option<TextBlock>],
+    edge_end_labels: &[Option<TextBlock>],
+    theme: &Theme,
+    config: &LayoutConfig,
+) -> Layout {
+    // Apply node positions.
+    for (id, node) in nodes.iter_mut() {
+        if let Some((cx, cy)) = output.node_centers.get(id) {
+            node.x = cx - node.width / 2.0;
+            node.y = cy - node.height / 2.0;
+        }
+    }
+    let mut edges: Vec<EdgeLayout> = Vec::with_capacity(graph.edges.len());
+    for (idx, edge) in graph.edges.iter().enumerate() {
+        let override_style = resolve_edge_style(idx, graph);
+        let points = if edge.from == edge.to {
+            // Compact self-loop on the right side of the node.
+            let (nx, ny, nw, nh) = nodes
+                .get(&edge.from)
+                .map(|n| (n.x, n.y, n.width, n.height))
+                .unwrap_or((0.0, 0.0, 40.0, 20.0));
+            let cx = nx + nw / 2.0;
+            let cy = ny + nh / 2.0;
+            let loop_out = 24.0f32;
+            vec![
+                (nx + nw, cy),
+                (nx + nw + loop_out, cy),
+                (nx + nw + loop_out, cy - nh / 2.0 - 8.0),
+                (cx, ny),
+            ]
+        } else if let Some(pts) = output.edge_points.get(&idx) {
+            pts.clone()
+        } else {
+            // Fallback: straight line between centers.
+            let from_c = nodes
+                .get(&edge.from)
+                .map(|n| (n.x + n.width / 2.0, n.y + n.height / 2.0))
+                .unwrap_or((0.0, 0.0));
+            let to_c = nodes
+                .get(&edge.to)
+                .map(|n| (n.x + n.width / 2.0, n.y + n.height / 2.0))
+                .unwrap_or((0.0, 0.0));
+            vec![from_c, to_c]
+        };
+        let label_anchor = output.edge_label_centers.get(&idx).copied();
+        let start_label_anchor = if edge_start_labels[idx].is_some() {
+            path_point_at_progress(&points, 0.25)
+        } else {
+            None
+        };
+        let end_label_anchor = if edge_end_labels[idx].is_some() {
+            path_point_at_progress(&points, 0.75)
+        } else {
+            None
+        };
+        edges.push(EdgeLayout {
+            from: edge.from.clone(),
+            to: edge.to.clone(),
+            label: edge_route_labels[idx].clone(),
+            start_label: edge_start_labels[idx].clone(),
+            end_label: edge_end_labels[idx].clone(),
+            label_anchor,
+            start_label_anchor,
+            end_label_anchor,
+            points,
+            directed: edge.directed,
+            arrow_start: edge.arrow_start,
+            arrow_end: edge.arrow_end,
+            arrow_start_kind: edge.arrow_start_kind,
+            arrow_end_kind: edge.arrow_end_kind,
+            start_decoration: edge.start_decoration,
+            end_decoration: edge.end_decoration,
+            style: edge.style,
+            override_style,
+        });
+    }
+    let nodes_out = std::mem::take(nodes);
+    flowchart::finalize::finalize_graph_layout(graph, nodes_out, edges, Vec::new(), theme, config)
+}
+
 pub fn compute_layout(graph: &Graph, theme: &Theme, config: &LayoutConfig) -> Layout {
     compute_layout_with_metrics(graph, theme, config).0
 }
@@ -616,6 +708,34 @@ fn compute_flowchart_layout(
         .collect();
 
     let mut label_dummy_ids: Vec<Option<String>> = vec![None; graph.edges.len()];
+
+    // Full dagre pipeline (B plan): when the Dagre engine is selected and
+    // the graph is suitable, run the dagre pipeline which produces node
+    // positions, edge points, and label anchors directly, bypassing the
+    // shared obstacle-avoidance edge pipeline. Falls through to the normal
+    // flow when the graph needs features this pipeline does not yet handle
+    // (subgraphs, non-flowchart diagrams).
+    if config.flowchart.engine == FlowchartLayoutEngine::Dagre {
+        if let Some(output) = flowchart::dagre_layout::layout_dagre(
+            graph,
+            &nodes,
+            &edge_route_labels,
+            config,
+            theme,
+        ) {
+            return build_layout_from_dagre_output(
+                graph,
+                &mut nodes,
+                output,
+                &edge_route_labels,
+                &edge_start_labels,
+                &edge_end_labels,
+                theme,
+                config,
+            );
+        }
+    }
+
     let layered_layout_started = Instant::now();
     let (rank_info, layered_snapshot) = match config.flowchart.engine {
         FlowchartLayoutEngine::Current => {
